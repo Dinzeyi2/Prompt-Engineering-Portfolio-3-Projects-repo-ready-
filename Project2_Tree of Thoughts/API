@@ -1,0 +1,8 @@
+{
+"problem": "Find the sum of the first 10 integers",
+"depth": 3,
+"thoughts_per_step": 3,
+"strategy": "beam",
+"beam_width": 3,
+"scorer": "llm"
+}
