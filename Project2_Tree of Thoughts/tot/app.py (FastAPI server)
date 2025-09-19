@@ -1,0 +1,47 @@
+import os
+from fastapi import FastAPI, HTTPException, Header
+from fastapi.middleware.cors import CORSMiddleware
+from .llm import LLMClient
+from .scoring import score_with_llm, simple_heuristic
+from .search import ToTConfig, tot_search
+from .utils import SolveRequest, SolveResponse
+
+
+API_KEY = os.getenv("API_KEY")
+
+
+app = FastAPI(title="Tree of Thoughts API")
+app.add_middleware(
+CORSMiddleware,
+allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "*").split(","),
+allow_credentials=True,
+allow_methods=["*"],
+allow_headers=["*"],
+)
+
+
+llm = LLMClient()
+
+
+@app.get("/health")
+async def health():
+return {"ok": True, "azure": llm.is_azure}
+
+
+@app.post("/solve", response_model=SolveResponse)
+async def solve(body: SolveRequest, x_api_key: str | None = Header(default=None)):
+if API_KEY and x_api_key != API_KEY:
+raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+cfg = ToTConfig(
+depth=body.depth,
+thoughts_per_step=body.thoughts_per_step,
+strategy=body.strategy,
+beam_width=body.beam_width,
+)
+
+
+scorer = score_with_llm if body.scorer == "llm" else simple_heuristic
+out = await tot_search(llm, scorer, body.problem, cfg)
+return SolveResponse(**out)
