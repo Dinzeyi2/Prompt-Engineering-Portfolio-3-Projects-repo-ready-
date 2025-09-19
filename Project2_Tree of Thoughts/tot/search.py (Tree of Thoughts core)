@@ -1,0 +1,77 @@
+from __future__ import annotations
+from .prompts import SYSTEM, THOUGHT_PROMPT, FINAL_PROMPT
+
+
+class ToTConfig:
+def __init__(self, depth: int = 3, thoughts_per_step: int = 3, strategy: str = "beam", beam_width: int = 3):
+self.depth = depth
+self.k = thoughts_per_step
+self.strategy = strategy # "bfs" or "beam"
+self.beam_width = beam_width
+
+
+async def generate_thoughts(llm, problem: str, so_far: List[str], k: int) -> List[str]:
+ask = THOUGHT_PROMPT.format(problem=problem, so_far=" | ".join(so_far) or "(start)", k=k)
+out = await llm.chat_json([
+{"role": "system", "content": "You return JSON only."},
+{"role": "user", "content": ask},
+])
+if isinstance(out, dict):
+arr = out.get("result") or out.get("thoughts") or out.get("candidates")
+if isinstance(arr, list):
+return [str(x) for x in arr][:k]
+# fallback if model returned something else
+return ["Try a simpler sub-problem", "Check a small example", "List constraints"][:k]
+
+
+async def finalize_answer(llm, problem: str, path: List[str]) -> str:
+ask = FINAL_PROMPT.format(problem=problem, so_far=" | ".join(path))
+return await llm.chat_text([
+{"role": "system", "content": SYSTEM},
+{"role": "user", "content": ask},
+])
+
+
+async def tot_search(llm, scorer, problem: str, cfg: ToTConfig) -> Dict:
+"""Run Tree-of-Thoughts with BFS or Beam Search. Returns best path & answer."""
+Node = Tuple[float, List[str]] # (score, path)
+
+
+if cfg.strategy == "bfs":
+frontier: List[List[str]] = [[]]
+best: Tuple[float, List[str]] = (0.0, [])
+for d in range(cfg.depth):
+next_frontier: List[List[str]] = []
+for path in frontier:
+candidates = await generate_thoughts(llm, problem, path, cfg.k)
+scores = await scorer(problem, path, candidates)
+for c, s in zip(candidates, scores):
+new_path = path + [c]
+if s > best[0]:
+best = (s, new_path)
+next_frontier.append(new_path)
+frontier = next_frontier
+answer = await finalize_answer(llm, problem, best[1])
+return {"strategy": "bfs", "best_score": best[0], "path": best[1], "answer": answer}
+
+
+# Beam search
+beam: List[Node] = [(-1.0, [])] # max-heap via negative
+for d in range(cfg.depth):
+cand_nodes: List[Node] = []
+for neg_s, path in beam:
+candidates = await generate_thoughts(llm, problem, path, cfg.k)
+scores = await scorer(problem, path, candidates)
+for c, s in zip(candidates, scores):
+new_path = path + [c]
+heapq.heappush(cand_nodes, (-s, new_path))
+# keep top W
+new_beam: List[Node] = []
+for _ in range(min(cfg.beam_width, len(cand_nodes))):
+new_beam.append(heapq.heappop(cand_nodes))
+beam = new_beam
+# best at the end
+best_neg, best_path = min(beam, key=lambda x: x[0]) if beam else (-1.0, [])
+best_score = -best_neg
+answer = await finalize_answer(llm, problem, best_path)
+return {"strategy": "beam", "best_score": best_score, "path": best_path, "answer": answer}
